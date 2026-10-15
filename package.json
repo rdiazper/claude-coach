@@ -19,7 +19,7 @@
     "build": "npm run build:ts && npm run build:viewer && npm run build:skill",
     "build:ts": "tsc && cp src/db/schema.sql dist/db/",
     "build:viewer": "vite build --config vite.config.viewer.ts",
-    "build:skill": "mkdir -p dist && cd skill && zip -r ../dist/coach-skill.zip . -x '*.DS_Store' && echo 'Skill packaged to dist/coach-skill.zip'",
+    "build:skill": "node scripts/build-skill.js",
     "build:website": "node scripts/build-website.js",
     "dev": "tsx watch src/cli.ts",
     "dev:viewer": "vite --config vite.config.viewer.ts",
@@ -38,7 +38,6 @@
     "@garmin/fitsdk": "^21.178.0",
     "consola": "^3.2.3",
     "jszip": "^3.10.1",
-    "open": "^10.1.0",
     "undici": "^7.16.0"
   },
   "devDependencies": {

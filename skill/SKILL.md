@@ -1,6 +1,6 @@
 ---
 name: coach
-description: Create personalized triathlon, marathon, and ultra-endurance training plans. Use when athletes ask for training plans, workout schedules, race preparation, or coaching advice. Can sync with Strava to analyze training history, or work from manually provided fitness data. Generates periodized plans with sport-specific workouts, zones, and race-day strategies.
+description: Create personalized triathlon, marathon, and ultra-endurance training plans. Use when athletes ask for training plans, workout schedules, race preparation, or coaching advice. Can sync with intervals.icu to analyze training history, or work from manually provided fitness data. Generates periodized plans with sport-specific workouts, zones, and race-day strategies.
 ---
 
 # Claude Coach: Endurance Training Plan Skill
@@ -11,9 +11,9 @@ You are an expert endurance coach specializing in triathlon, marathon, and ultra
 
 Before creating a training plan, you need to understand the athlete's current fitness. There are two ways to gather this information:
 
-### Step 1: Check for Existing Strava Data
+### Step 1: Check for Existing intervals.icu Data
 
-First, check if the user has already synced their Strava data:
+First, check if the user has already synced their intervals.icu data:
 
 ```bash
 ls ~/.claude-coach/coach.db
@@ -30,17 +30,17 @@ questions:
   - question: "How would you like to provide your training data?"
     header: "Data Source"
     options:
-      - label: "Connect to Strava (Recommended)"
-        description: "Copy tokens from strava.com/settings/api - I'll analyze your training history"
+      - label: "Connect to intervals.icu (Recommended)"
+        description: "Give me your Athlete ID and API Key from intervals.icu/settings - I'll analyze your training history"
       - label: "Enter manually"
-        description: "Tell me about your fitness - no Strava account needed"
+        description: "Tell me about your fitness - no intervals.icu account needed"
 ```
 
 ---
 
-## Option A: Strava Integration
+## Option A: intervals.icu Integration
 
-If they choose Strava, first check if database already exists:
+If they choose intervals.icu, first check if database already exists:
 
 ```bash
 ls ~/.claude-coach/coach.db
@@ -48,76 +48,50 @@ ls ~/.claude-coach/coach.db
 
 **If the database exists:** Skip to "Database Access" to query their training history.
 
-**If no database exists:** Guide the user through Strava authorization.
+**If no database exists:** Guide the user through connecting their intervals.icu account. Unlike Strava, intervals.icu has no OAuth dance - no browser redirect, no callback URL to paste back. It's a single API key, which makes this a one-step exchange.
 
-### Step 1: Get Strava API Credentials
+### Step 1: Get intervals.icu Credentials
 
 Use **AskUserQuestion** to get credentials:
 
 ```
 questions:
-  - question: "Go to strava.com/settings/api - what is your Client ID?"
-    header: "Client ID"
+  - question: "Go to intervals.icu/settings and scroll to 'Developer Settings' - what is your Athlete ID?"
+    header: "Athlete ID"
     options:
-      - label: "I have my Client ID"
-        description: "Enter the numeric Client ID via 'Other'"
-      - label: "I need to create an app first"
-        description: "Click 'Create an app', set callback domain to 'localhost'"
+      - label: "I have my Athlete ID"
+        description: "It looks like i123456 - enter it via 'Other'"
+      - label: "I don't have an intervals.icu account"
+        description: "Sign up free at intervals.icu, then come back to this step"
 ```
 
-Then ask for the secret:
+Then ask for the API key:
 
 ```
 questions:
-  - question: "Now enter your Client Secret from the same page"
-    header: "Client Secret"
+  - question: "Now click 'Generate New Key' (or copy your existing one) under Developer Settings - what is your API Key?"
+    header: "API Key"
     options:
-      - label: "I have my Client Secret"
-        description: "Enter the secret via 'Other'"
+      - label: "I have my API Key"
+        description: "Enter the key via 'Other'"
 ```
 
-### Step 2: Generate Authorization URL
+### Step 2: Validate and Sync
 
-Run the auth command to generate the OAuth URL:
+Run these commands (the CLI validates the credentials by fetching the athlete profile, then saves them for future syncs):
 
 ```bash
-npx claude-coach auth --client-id=CLIENT_ID --client-secret=CLIENT_SECRET
-```
-
-This outputs an authorization URL. **Show this URL to the user** and tell them:
-
-1. Open the URL in a browser
-2. Click "Authorize" on Strava
-3. You'll be redirected to a page that won't load (that's expected!)
-4. Copy the **entire URL** from the browser's address bar and paste it back here
-
-### Step 3: Get the Redirect URL
-
-Use **AskUserQuestion** to get the URL:
-
-```
-questions:
-  - question: "Paste the entire URL from your browser's address bar"
-    header: "Redirect URL"
-    options:
-      - label: "I have the URL"
-        description: "Paste the full URL (starts with http://localhost...) via 'Other'"
-```
-
-### Step 4: Exchange Code and Sync
-
-Run these commands to complete authentication and sync (the CLI extracts the code from the URL automatically):
-
-```bash
-npx claude-coach auth --code="FULL_REDIRECT_URL"
+npx claude-coach auth --athlete-id=ATHLETE_ID --api-key=API_KEY
 npx claude-coach sync --days=730
 ```
 
 This will:
 
-1. Exchange the code for access tokens
-2. Fetch 2 years of activity history
+1. Confirm the Athlete ID and API Key are valid
+2. Fetch 2 years of activity history from intervals.icu
 3. Store everything in `~/.claude-coach/coach.db`
+
+intervals.icu itself pulls from whatever the athlete has connected upstream (Garmin, Wahoo, TrainerRoad, manual uploads, etc.), so this one sync covers every source they've already unified there.
 
 ### SQLite Requirements
 
@@ -171,7 +145,7 @@ If they choose manual entry, gather the following through conversation. Ask natu
 
 ### Creating a Manual Assessment
 
-When working from manual data, create an assessment object with the same structure as you would from Strava data:
+When working from manual data, create an assessment object with the same structure as you would from intervals.icu data:
 
 ```json
 {
@@ -241,13 +215,13 @@ Read these files as needed during plan creation:
 
 ### Phase 0: Setup
 
-1. Ask how athlete wants to provide data (Strava or manual)
-2. **If Strava:** Check for existing database, gather credentials if needed, run sync
+1. Ask how athlete wants to provide data (intervals.icu or manual)
+2. **If intervals.icu:** Check for existing database, gather credentials if needed, run sync
 3. **If Manual:** Gather fitness information through conversation
 
 ### Phase 1: Data Gathering
 
-**If using Strava:**
+**If using intervals.icu:**
 
 1. Read `skill/reference/queries.md` and run the assessment queries
 2. Read `skill/reference/assessment.md` to interpret the results
@@ -296,14 +270,14 @@ The JSON must follow the TrainingPlan schema.
 
 **Inferring Unit Preferences:**
 
-Determine the athlete's preferred units from their Strava data and event location:
+Determine the athlete's preferred units from their intervals.icu data and event location:
 
 | Indicator                                          | Likely Preference                            |
 | -------------------------------------------------- | -------------------------------------------- |
 | US-based events (Ironman Arizona, Boston Marathon) | Imperial: miles for bike/run, yards for swim |
 | European/Australian events                         | Metric: km for bike/run, meters for swim     |
-| Strava activities show distances in miles          | Imperial                                     |
-| Strava activities show distances in km             | Metric                                       |
+| intervals.icu activities show distances in miles   | Imperial                                     |
+| intervals.icu activities show distances in km      | Metric                                       |
 | Pool workouts in 25yd/50yd pools                   | Yards for swim                               |
 | Pool workouts in 25m/50m pools                     | Meters for swim                              |
 
@@ -544,6 +518,6 @@ After both files are created, tell the user:
 - **Zones must be established** before prescribing specific workouts
 - **Output JSON, then render HTML** - Write the plan as `.json`, then use `npx claude-coach render` to create the HTML viewer
 - **Explain the "why"** - Athletes trust and follow plans they understand
-- **Be conservative with manual data** - When working without Strava, err on the side of caution with volume and intensity
+- **Be conservative with manual data** - When working without intervals.icu, err on the side of caution with volume and intensity
 - **Recommend field tests** - For manual data athletes, include zone validation workouts in the first 1-2 weeks
 - **Durations must add up** - The parts of `humanReadable` add up to `durationMinutes`, warm-up and cool-down included (count distance-based parts at the prescribed pace); change both together

@@ -1,9 +1,9 @@
--- Core activity data
+-- Core activity data (source: intervals.icu REST API)
 CREATE TABLE IF NOT EXISTS activities (
-  id INTEGER PRIMARY KEY,           -- Strava activity ID
+  id TEXT PRIMARY KEY,              -- intervals.icu activity ID, e.g. "i197315651" (not numeric)
   name TEXT,
-  sport_type TEXT,                  -- Run, Ride, Swim, etc.
-  start_date TEXT,                  -- ISO 8601 UTC
+  sport_type TEXT,                  -- intervals.icu's `type` field: Run, Ride, VirtualRide, WeightTraining, etc.
+  start_date TEXT,                  -- local time (intervals.icu's start_date_local) - used for all date grouping below
   elapsed_time INTEGER,             -- seconds
   moving_time INTEGER,              -- seconds
   distance REAL,                    -- meters
@@ -12,23 +12,24 @@ CREATE TABLE IF NOT EXISTS activities (
   max_speed REAL,                   -- m/s
   average_heartrate REAL,
   max_heartrate REAL,
-  average_watts REAL,               -- cycling/running power
-  max_watts REAL,
-  weighted_average_watts REAL,      -- normalized power
-  kilojoules REAL,
-  suffer_score INTEGER,             -- Strava's relative effort
+  average_watts REAL,               -- icu_average_watts: direct or estimated average power
+  weighted_average_watts REAL,      -- icu_weighted_avg_watts: normalized power
+  training_load INTEGER,            -- icu_training_load: intervals.icu's TSS-equivalent effort score
   average_cadence REAL,
   calories REAL,
   description TEXT,
-  workout_type INTEGER,             -- 0=default, 1=race, 2=workout, 3=long run
-  gear_id TEXT,
-  raw_json TEXT,                    -- full Strava response as JSON
+  race INTEGER,                     -- 0/1, intervals.icu's race flag (replaces Strava's workout_type)
+  ftp INTEGER,                      -- FTP in effect at the time of this (cycling) activity
+  device_name TEXT,                 -- e.g. "Garmin fenix 6 Pro", "GARMIN EDGE_530", "Watch6,18"
+  source TEXT,                      -- GARMIN_CONNECT | UPLOAD | OAUTH_CLIENT | MANUAL
+  external_id TEXT,
+  raw_json TEXT,                    -- full intervals.icu response as JSON
   synced_at TEXT DEFAULT (datetime('now'))
 );
 
 -- Time-series streams (HR, power, pace over time)
 CREATE TABLE IF NOT EXISTS streams (
-  activity_id INTEGER PRIMARY KEY,
+  activity_id TEXT PRIMARY KEY,
   time_data TEXT,                   -- JSON array: seconds from start
   distance_data TEXT,               -- JSON array: cumulative meters
   heartrate_data TEXT,              -- JSON array
@@ -41,12 +42,14 @@ CREATE TABLE IF NOT EXISTS streams (
 
 -- Athlete profile
 CREATE TABLE IF NOT EXISTS athlete (
-  id INTEGER PRIMARY KEY,
+  id TEXT PRIMARY KEY,              -- intervals.icu athlete ID, e.g. "i647318"
   firstname TEXT,
   lastname TEXT,
-  weight REAL,                      -- kg
-  ftp INTEGER,                      -- functional threshold power (watts)
-  max_heartrate INTEGER,
+  weight REAL,                      -- kg (icu_weight)
+  ftp INTEGER,                      -- derived from the most recent cycling activity's icu_ftp
+                                     -- (intervals.icu does not expose a single FTP on the athlete profile)
+  max_heartrate INTEGER,            -- derived as MAX(max_heartrate) across synced activities
+  resting_hr INTEGER,               -- icu_resting_hr
   raw_json TEXT,
   updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -85,7 +88,7 @@ SELECT
   ROUND(SUM(moving_time) / 3600.0, 1) AS hours,
   ROUND(SUM(distance) / 1000.0, 1) AS km,
   ROUND(AVG(average_heartrate), 0) AS avg_hr,
-  ROUND(AVG(suffer_score), 0) AS avg_effort
+  ROUND(AVG(training_load), 0) AS avg_load
 FROM activities
 GROUP BY week, sport_type
 ORDER BY week DESC, sport_type;
@@ -99,7 +102,7 @@ SELECT
   moving_time / 60 AS minutes,
   ROUND(distance / 1000.0, 1) AS km,
   ROUND(average_heartrate, 0) AS hr,
-  suffer_score
+  training_load
 FROM activities
 ORDER BY start_date DESC
 LIMIT 50;

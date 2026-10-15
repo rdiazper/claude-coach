@@ -43,7 +43,7 @@ GROUP BY sport_type;
 -- Weekly training load trend
 SELECT
   strftime('%Y-W%W', start_date) AS week,
-  SUM(suffer_score) AS weekly_load,
+  SUM(training_load) AS weekly_load,
   ROUND(SUM(moving_time) / 3600.0, 1) AS total_hours
 FROM activities
 WHERE start_date >= date('now', '-12 weeks')
@@ -54,7 +54,7 @@ ORDER BY week;
 ## Athletic Foundation (Lifetime / 2 Years)
 
 ```sql
--- Race history (workout_type = 1)
+-- Race history (race = 1)
 SELECT
   strftime('%Y-%m', start_date) AS month,
   name,
@@ -62,7 +62,7 @@ SELECT
   ROUND(distance / 1000.0, 1) AS km,
   ROUND(moving_time / 3600.0, 1) AS hours
 FROM activities
-WHERE workout_type = 1
+WHERE race = 1
 ORDER BY start_date DESC;
 
 -- Lifetime peaks by sport
@@ -95,18 +95,18 @@ GROUP BY sport_type;
 ## Strength Detection
 
 ```sql
--- Efficiency: Low suffer_score per minute = strength
+-- Efficiency: Low training_load per minute = strength
 SELECT sport_type,
   ROUND(AVG(distance) / 1000.0, 1) AS avg_km,
   ROUND(AVG(moving_time) / 60.0, 0) AS avg_minutes,
-  ROUND(AVG(suffer_score), 0) AS avg_suffer,
-  ROUND(AVG(suffer_score * 60.0 / moving_time), 2) AS suffer_per_minute,
+  ROUND(AVG(training_load), 0) AS avg_load,
+  ROUND(AVG(training_load * 60.0 / moving_time), 2) AS load_per_minute,
   ROUND(AVG(average_heartrate), 0) AS avg_hr
 FROM activities
 WHERE start_date >= date('now', '-6 months')
   AND moving_time > 1800
 GROUP BY sport_type
-ORDER BY suffer_per_minute ASC;
+ORDER BY load_per_minute ASC;
 
 -- Long sessions at low HR = aerobic strength
 SELECT sport_type,

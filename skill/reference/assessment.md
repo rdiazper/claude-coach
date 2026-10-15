@@ -32,8 +32,8 @@ Their plan should focus on **rebuilding** (faster progression possible) rather t
 | Signal                              | Interpretation                       |
 | ----------------------------------- | ------------------------------------ |
 | Long sessions at low HR             | Excellent aerobic base in that sport |
-| Low suffer_score per minute         | Sport feels easy to them (strength)  |
-| High suffer_score per minute        | Sport is hard for them (limiter)     |
+| Low training_load per minute        | Sport feels easy to them (strength)  |
+| High training_load per minute       | Sport is hard for them (limiter)     |
 | Historical peaks >> recent activity | Dormant fitness, will return quickly |
 | No historical data for a sport      | True beginner, needs careful build   |
 | Consistent high volume              | Sport they enjoy and prioritize      |
@@ -42,7 +42,7 @@ Their plan should focus on **rebuilding** (faster progression possible) rather t
 
 ## Example Interpretation
 
-_"The athlete's swim data shows 5000m sessions at avg HR 125 with suffer_score of 45. Their runs show 10km at avg HR 165 with suffer_score of 120. Swimming is clearly a strength (low effort, long duration). Running is a limiter (high effort, shorter duration). Even though they haven't swum in 4 months, that fitness will return quickly with a few weeks of swimming. The plan should prioritize run development while maintaining swim fitness with modest volume."_
+_"The athlete's swim data shows 5000m sessions at avg HR 125 with a training_load of 45. Their runs show 10km at avg HR 165 with a training_load of 120. Swimming is clearly a strength (low effort, long duration). Running is a limiter (high effort, shorter duration). Even though they haven't swum in 4 months, that fitness will return quickly with a few weeks of swimming. The plan should prioritize run development while maintaining swim fitness with modest volume."_
 
 ## Event Requirements Reference
 
@@ -85,7 +85,7 @@ _"The athlete's swim data shows 5000m sessions at avg HR 125 with suffer_score o
 
 ### Inferring Long Session Preferences
 
-Before asking, analyze their Strava data to identify patterns:
+Before asking, analyze their intervals.icu data to identify patterns:
 
 ```sql
 -- Find preferred days for long rides (>90 min)
@@ -116,7 +116,7 @@ Use this data to make an informed suggestion: _"I notice you typically do your l
 ### Example Dialogue
 
 ```
-Based on your Strava data, here's my initial assessment:
+Based on your intervals.icu data, here's my initial assessment:
 
 **Strengths:**
 - Swimming: Your 5000m sessions at HR 125 suggest excellent swim fitness.

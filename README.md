@@ -1,35 +1,39 @@
-# Claude Coach
+# Claude Coach (intervals.icu fork)
 
-Claude Coach allows you to use Claude to create custom-tailored training programs for triathlons, marathons, and other endurance activities. Using a data-driven approach and principles from top training plans, Claude will create a training plan that's uniquely fit for you, your personal fitness, and the constraints you have in the next couple of weeks. Maybe you're recovering from an injury, maybe you're traveling and don't have access to a pool or track in a certain week - tell Claude about it and it'll create a plan that works for you.
+This is a fork of [felixrieseberg/claude-coach](https://github.com/felixrieseberg/claude-coach), with the data source swapped from Strava to [intervals.icu](https://intervals.icu). Everything else - the coaching skill, the periodization logic, the interactive training-plan viewer, the export formats - is unchanged.
 
-The output is a beautiful training plan app that allows you to add, edit, or move workouts, mark them as complete, and update key training data like heart rate zones, LTHR, threshold paces, FTP, and others. Your data is kept locally in your browser.
+Claude Coach lets you use Claude to build a custom-tailored training plan for a triathlon, marathon, or other endurance event. It looks at your actual training history - weekly volume, long-session patterns, HR and power data, consistency - and designs a periodized plan around it instead of a generic template. The output is an interactive HTML training plan you can edit, mark workouts complete on, and export to your calendar or training apps.
 
-Workouts can be exported as simple calendar events (.ics), Zwift (.zwo), Garmin (.fit), or TrainerRoad/ERG (.mrc) workouts.
+## Why intervals.icu instead of Strava
+
+- **One credential, not an OAuth dance.** Strava requires creating an API app, running a local callback server, opening a browser, authorizing, and pasting back a redirect URL. intervals.icu just needs an Athlete ID and an API Key, both visible on one settings page. No browser round-trip, no expiring tokens to refresh.
+- **It's already a data hub.** Most athletes don't get their training data from one source - a watch for runs, a separate head unit for rides, a manual upload for a gym session logged elsewhere. intervals.icu is commonly used specifically to merge all of that into one account (Garmin, Wahoo, TrainerRoad, manual `.fit` uploads, and more), so syncing it here picks up everything in one pass instead of only whatever one platform happened to receive directly.
+- **Richer training-load data.** intervals.icu computes its own training load figure per activity (`icu_training_load`) along with rolling CTL/ATL, which this fork uses as the load metric instead of Strava's proprietary suffer score.
 
 ## Examples
 
-See example training plans at [felixrieseberg.github.io/claude-coach](https://felixrieseberg.github.io/claude-coach/#demos).
+The training-plan JSON schema and HTML viewer are unchanged from upstream, so the original project's example plans are a good preview of the output: [felixrieseberg.github.io/claude-coach](https://felixrieseberg.github.io/claude-coach/#demos).
 
-## Installation & Creating a training plan
+## Installation & Creating a Training Plan
 
-I happen to work at Anthropic, so this tool is optimized for Claude. To use this tool, you need access to Claude.ai or Claude Code with network access for Skills. Depending on user/admin settings, Skills may have full, partial, or no network access.
+You need access to Claude.ai or Claude Code with network access for Skills. Depending on user/admin settings, Skills may have full, partial, or no network access.
 
-Syncing all your Strava activities and creating a tailored training plan takes ca. 15 minutes.
+Syncing your intervals.icu history and creating a tailored training plan takes about 10 minutes.
 
 ### Installing the Skill
 
-First, [download the latest skill from GitHub Releases](https://github.com/felixrieseberg/claude-coach/releases/latest/download/coach-skill.zip).
+Build the skill package from this repo (see "Building from source" below), or grab it from this fork's own GitHub Releases if you've published one.
 
 **Claude.ai:**
 
 1. Open [Claude.ai Settings](https://claude.ai/settings/capabilities)
 2. Enable "Code execution and file creation"
-3. In the allowed domains list, add `*.strava.com`
-4. Scroll down to "Skills" and click "Add skill", then upload the `coach-skill.zip` file
+3. In the allowed domains list, add `intervals.icu`
+4. Scroll down to "Skills" and click "Add skill", then upload `coach-skill.zip`
 
 **Claude Code:**
 
-Claude Code loads skills from `~/.claude/skills/<skill-name>/` (available in all your projects) or `.claude/skills/<skill-name>/` (a single project). Extract `coach-skill.zip` into a `coach` folder in either location, so that `SKILL.md` ends up at `~/.claude/skills/coach/SKILL.md` (or `.claude/skills/coach/SKILL.md`). On macOS or Linux, adjusting the path to wherever you saved the zip:
+Claude Code loads skills from `~/.claude/skills/<skill-name>/` (available in all your projects) or `.claude/skills/<skill-name>/` (a single project). Extract `coach-skill.zip` into a `coach` folder in either location, so that `SKILL.md` ends up at `~/.claude/skills/coach/SKILL.md` (or `.claude/skills/coach/SKILL.md`):
 
 ```sh
 mkdir -p ~/.claude/skills/coach
@@ -38,61 +42,94 @@ unzip -o ~/Downloads/coach-skill.zip -d ~/.claude/skills/coach
 
 Then start a new Claude Code session (or restart a running one) so it picks up the skill. See the [Claude Code skills documentation](https://code.claude.com/docs/en/skills) for details.
 
-### Creating a plan
+### Creating a Plan
 
-Use the most capable model available to you (as I'm writing this, that's Opus 4.5). Prompt Claude with something like this:
+Use the most capable model available to you. Prompt Claude with something like:
 
 > Help me create a training plan for the Ironman 70.3 Oceanside on March 29th 2026 using the "coach" skill.
 
-Claude will ask how you'd like to provide your fitness data. You have two options: You can either tell Claude about your fitness history manually - or you can give it access to your Strava activities. I recommend the later - data doesn't lie and more data allows Claude to make a training plan that really fits you.
+Claude will ask how you'd like to provide your fitness data: manually, or by connecting intervals.icu. Connecting intervals.icu is recommended - data beats guesswork, and Claude can build a plan that actually fits your current fitness.
 
-#### Option 1: Connect to Strava (Recommended)
+#### Option 1: Connect to intervals.icu (Recommended)
 
-The easiest way to get a personalized plan is to let Claude analyze your Strava training history. This gives Claude real data about your current fitness, training patterns, and progress.
+Claude needs an **Athlete ID** and an **API Key** to read your activities. You're only giving Claude read access to your own data - nobody else sees it, and intervals.icu lets you revoke the key at any time.
 
-Claude needs a `Client ID` and `Client Secret` to access your Strava activities. You're only giving Claude access to your data - nobody else gets to see it.
-
-1. Go to [strava.com/settings/api](https://www.strava.com/settings/api) and log in with your Strava account
-2. You'll see a form titled "My API Application" - fill it out:
-   - **Application Name**: Enter anything you like (e.g., "Claude Coach")
-   - **Category**: Select "Data Importer"
-   - **Club**: Leave this blank
-   - **Website**: Enter any URL (e.g., `https://claude.ai`)
-   - **Application Description**: Enter anything (e.g., "Training plan generation")
-   - **Authorization Callback Domain**: Enter `localhost`
-3. Check the box to agree to Strava's API Agreement and click **Create**
-4. Copy your **Client ID** and **Client Secret** and give them to Claude when prompted
+1. Go to [intervals.icu/settings](https://intervals.icu/settings) and log in
+2. Scroll to **Developer Settings**
+3. Your **Athlete ID** is shown there (it looks like `i123456`)
+4. Click **Generate New Key** (or copy your existing one) to get your **API Key**
+5. Give both to Claude when prompted
 
 #### Option 2: Manual Entry
 
-Don't use Strava, or prefer not to connect it? No problem. You can tell Claude about your fitness directly. Be prepared to share:
+Don't use intervals.icu, or prefer not to connect it? Tell Claude about your fitness directly. Be ready to share:
 
 **Current Training (recent 4-8 weeks):**
 
 - Weekly training hours by sport (swim/bike/run)
-- Typical long session distances (longest ride, longest run, etc.)
+- Typical long-session distances (longest ride, longest run, etc.)
 - Training consistency (how many weeks have you been training regularly?)
 
 **Performance Benchmarks (any you know):**
 
 - Bike FTP (Functional Threshold Power) in watts
 - Run threshold pace or recent race times (5K, 10K, half marathon, etc.)
-- Swim CSS (Critical Swim Speed) or recent time trial (e.g., 1000m time)
+- Swim CSS (Critical Swim Speed) or a recent time trial (e.g., 1000m time)
 - Max heart rate and/or lactate threshold heart rate
 
-### Telling Claude about your event & constraints
+### Telling Claude About Your Event & Constraints
 
-In the next step, Claude will ask you about yourself, the event you're training for, and any constraints it should keep in mind. Examples of information you'd tell any coach:
+Claude will also ask about yourself, your event, and any constraints to keep in mind - years in the sport, past races, recent breaks, injuries, schedule limitations, equipment access. The more detail you give it, the better the plan.
 
-- Years in the sport
-- Previous races completed (distances and approximate times)
-- Any recent breaks from training
-- Injuries or health issues
-- Schedule limitations (work travel, family, etc.)
-- Equipment access (pool availability, trainer, etc.)
+## Building from Source
 
-Claude will use this information to create a plan tailored to your current fitness level. The more detail you provide, the better your plan will be.
+```sh
+npm install
+npm run build        # builds the CLI, the viewer, and packages skill/ into dist/coach-skill.zip
+```
 
-# About
+`npm run dev` runs the CLI against `src/cli.ts` directly (via `tsx`) without a build step - handy while iterating on the intervals.icu integration. `npm test` runs the test suite.
 
-Claude Coach is an independent, open-source project and is not made by, endorsed by, or affiliated with Anthropic, PBC. "Claude" is a trademark of Anthropic. This tool is a skill/plugin that works with Claude products but is developed and maintained independently. License: MIT.
+## CLI Reference
+
+```sh
+# First-time setup + sync (headless/Claude environments)
+npx claude-coach sync --athlete-id=i123456 --api-key=yourapikeyhere
+
+# Validate credentials without syncing
+npx claude-coach auth --athlete-id=i123456 --api-key=yourapikeyhere
+
+# Later syncs reuse the saved config at ~/.claude-coach/config.json
+npx claude-coach sync
+
+# Render a training plan JSON to an interactive HTML viewer
+npx claude-coach render plan.json --output my-plan.html
+
+# Query the local SQLite database directly
+npx claude-coach query "SELECT * FROM weekly_volume LIMIT 5" --json
+```
+
+Data lives in `~/.claude-coach/coach.db` (SQLite) and `~/.claude-coach/config.json` (your Athlete ID and API Key).
+
+## Known Limitations of This Fork
+
+- **Time-series streams (HR/power/pace curves) aren't synced yet.** The `streams` table exists in the schema but the sync command only populates activity summaries. The upstream Strava version had the same gap.
+- **Athlete FTP and max heart rate are derived, not read directly.** intervals.icu doesn't expose a single FTP value on the athlete profile the way Strava does - FTP is tracked per cycling activity instead, so this fork uses the most recent one. Max HR is derived as the highest `max_heartrate` seen across synced activities.
+- **No OAuth means no token scoping.** A Strava app can request a narrow `activity:read_all` scope. An intervals.icu API key grants broader account access (same key used for the website's own integrations). Treat it like a password: it's stored in `~/.claude-coach/config.json`, unencrypted, same as the original project stored Strava tokens.
+
+## What Changed vs. Upstream
+
+| Area                       | Upstream (Strava)                               | This fork (intervals.icu)                                           |
+| -------------------------- | ----------------------------------------------- | ------------------------------------------------------------------- |
+| Auth                       | OAuth 2.0, local callback server, token refresh | Single API key (Basic auth), no expiry                              |
+| `sync` / `auth` flags      | `--client-id` / `--client-secret` / `--code`    | `--athlete-id` / `--api-key`                                        |
+| Activity ID                | Numeric                                         | String (e.g. `i197315651`)                                          |
+| `activities.sport_type`    | Strava's `sport_type`                           | intervals.icu's `type`                                              |
+| `activities.training_load` | `suffer_score`                                  | `icu_training_load`                                                 |
+| `activities.race`          | `workout_type` integer (0-3)                    | `race` boolean                                                      |
+| New columns                | -                                               | `device_name`, `source`, `external_id`, `ftp`; `athlete.resting_hr` |
+| Removed dependency         | `open` (browser launcher for OAuth)             | -                                                                   |
+
+## About
+
+This fork is an independent project, not affiliated with or endorsed by Anthropic or by the upstream project's author. "Claude" is a trademark of Anthropic. License: MIT (see `LICENSE.md`), carried over from the upstream project by Felix Rieseberg.

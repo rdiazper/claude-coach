@@ -27,10 +27,10 @@ Where:
 
 ### Running TSS (rTSS)
 
-Estimated from pace and HR. Use Strava's suffer_score as a proxy:
+Estimated from pace and HR. Use intervals.icu's training_load as a proxy:
 
-- suffer_score ≈ rTSS for most athletes
-- Compare suffer_score per hour across sessions to gauge relative intensity
+- training_load ≈ rTSS for most athletes
+- Compare training_load per hour across sessions to gauge relative intensity
 
 ### Swim TSS (sTSS)
 

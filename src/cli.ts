@@ -1,20 +1,18 @@
 import {
   configExists,
+  ensureConfigDir,
   loadConfig,
   promptForConfig,
   saveConfig,
-  saveTokens,
-  tokensExist,
   getDbPath,
   createConfig,
-  type Tokens,
+  type Credentials,
 } from "./lib/config.js";
 import { log } from "./lib/logging.js";
 import { migrate } from "./db/migrate.js";
 import { execute, initDatabase, query, queryJson } from "./db/client.js";
-import { getValidTokens } from "./strava/oauth.js";
-import { getAllActivities, getAthlete } from "./strava/api.js";
-import type { StravaActivity, StravaTokenResponse } from "./strava/types.js";
+import { getAllActivities, getAthlete } from "./intervals/api.js";
+import type { IntervalsActivity, IntervalsAthlete } from "./intervals/types.js";
 import { readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
@@ -42,10 +40,8 @@ if (proxyUrl) {
 
 interface SyncArgs {
   command: "sync";
-  clientId?: string;
-  clientSecret?: string;
-  accessToken?: string;
-  refreshToken?: string;
+  athleteId?: string;
+  apiKey?: string;
   days?: number;
 }
 
@@ -63,9 +59,8 @@ interface QueryArgs {
 
 interface AuthArgs {
   command: "auth";
-  clientId?: string;
-  clientSecret?: string;
-  code?: string;
+  athleteId?: string;
+  apiKey?: string;
 }
 
 interface HelpArgs {
@@ -78,18 +73,13 @@ function parseArgs(): CliArgs {
   const args = process.argv.slice(2);
 
   if (args.length === 0 || args[0] === "sync") {
-    // Sync command (default)
     const syncArgs: SyncArgs = { command: "sync" };
 
     for (const arg of args) {
-      if (arg.startsWith("--client-id=")) {
-        syncArgs.clientId = arg.split("=")[1];
-      } else if (arg.startsWith("--client-secret=")) {
-        syncArgs.clientSecret = arg.split("=")[1];
-      } else if (arg.startsWith("--access-token=")) {
-        syncArgs.accessToken = arg.split("=")[1];
-      } else if (arg.startsWith("--refresh-token=")) {
-        syncArgs.refreshToken = arg.split("=")[1];
+      if (arg.startsWith("--athlete-id=")) {
+        syncArgs.athleteId = arg.split("=")[1];
+      } else if (arg.startsWith("--api-key=")) {
+        syncArgs.apiKey = arg.split("=")[1];
       } else if (arg.startsWith("--days=")) {
         syncArgs.days = parseInt(arg.split("=")[1]);
       }
@@ -140,12 +130,10 @@ function parseArgs(): CliArgs {
     const authArgs: AuthArgs = { command: "auth" };
 
     for (const arg of args) {
-      if (arg.startsWith("--client-id=")) {
-        authArgs.clientId = arg.slice("--client-id=".length);
-      } else if (arg.startsWith("--client-secret=")) {
-        authArgs.clientSecret = arg.slice("--client-secret=".length);
-      } else if (arg.startsWith("--code=")) {
-        authArgs.code = arg.slice("--code=".length);
+      if (arg.startsWith("--athlete-id=")) {
+        authArgs.athleteId = arg.split("=")[1];
+      } else if (arg.startsWith("--api-key=")) {
+        authArgs.apiKey = arg.split("=")[1];
       }
     }
 
@@ -167,42 +155,38 @@ Claude Coach - Training Plan Tools
 Usage: npx claude-coach <command> [options]
 
 Commands:
-  sync              Sync activities from Strava
-  auth              Get Strava authorization URL or exchange code for tokens
+  sync              Sync activities from intervals.icu
+  auth              Validate and save intervals.icu credentials (no sync)
   render <file>     Render a training plan JSON to HTML
   query <sql>       Run a SQL query against the database
   help              Show this help message
 
-Auth Options (for headless/Claude environments):
-  --client-id=ID        Strava API client ID
-  --client-secret=SEC   Strava API client secret
-  --code=URL_OR_CODE    Full redirect URL or just the authorization code
+Credentials (find both at https://intervals.icu/settings -> Developer Settings):
+  --athlete-id=ID   intervals.icu Athlete ID (e.g. i123456)
+  --api-key=KEY     intervals.icu API Key
 
-  Step 1: Run 'auth' with credentials to get authorization URL
-  Step 2: User clicks URL, authorizes, copies entire redirect URL
-  Step 3: Run 'auth --code=URL' to exchange for tokens
-  Step 4: Run 'sync' to fetch activities
+  Both commands accept credentials via flags (headless/Claude environments)
+  or, if omitted and no config exists yet, will prompt for them interactively.
+  Credentials are saved to ~/.claude-coach/config.json after the first run.
 
 Sync Options:
-  --client-id=ID        Strava API client ID (for OAuth flow)
-  --client-secret=SEC   Strava API client secret (for OAuth flow)
-  --days=N              Days of history to sync (default: 730)
+  --days=N          Days of history to sync (default: 730)
 
 Render Options:
-  --output, -o FILE     Output HTML file (default: <input>.html)
+  --output, -o FILE Output HTML file (default: <input>.html)
 
 Query Options:
-  --json                Output as JSON (default: plain text)
+  --json            Output as JSON (default: plain text)
 
 Examples:
-  # Headless auth flow (for Claude/automated environments)
-  npx claude-coach auth --client-id=12345 --client-secret=abc123
-  # User clicks URL, copies code from failed redirect
-  npx claude-coach auth --code=AUTHORIZATION_CODE
-  npx claude-coach sync
+  # First-time setup + sync (headless/Claude environments)
+  npx claude-coach sync --athlete-id=i123456 --api-key=yourapikeyhere
 
-  # Interactive auth flow (opens browser)
-  npx claude-coach sync --client-id=12345 --client-secret=abc123
+  # Validate credentials without syncing
+  npx claude-coach auth --athlete-id=i123456 --api-key=yourapikeyhere
+
+  # Later syncs reuse the saved config
+  npx claude-coach sync
 
   # Render a training plan to HTML
   npx claude-coach render plan.json --output my-plan.html
@@ -213,100 +197,48 @@ Examples:
 }
 
 // ============================================================================
-// Auth Command (for headless/Claude environments)
+// Credential Resolution
 // ============================================================================
 
-const REDIRECT_PORT = 8765;
-const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/callback`;
-const AUTHORIZE_URL = "https://www.strava.com/oauth/authorize";
-const TOKEN_URL = "https://www.strava.com/oauth/token";
+async function resolveCredentials(
+  athleteId: string | undefined,
+  apiKey: string | undefined,
+  syncDays: number
+): Promise<Credentials> {
+  if (athleteId && apiKey) {
+    // Always persist explicitly-provided credentials, even over an existing
+    // config - otherwise fixing a bad Athlete ID/API Key still requires
+    // manually deleting ~/.claude-coach/config.json before the correction
+    // sticks for future bare `sync` calls.
+    saveConfig(createConfig(athleteId, apiKey, syncDays));
+    return { athlete_id: athleteId, api_key: apiKey };
+  }
+
+  if (configExists()) {
+    return loadConfig().intervals;
+  }
+
+  log.info("No configuration found. Let's set things up.");
+  const config = await promptForConfig();
+  saveConfig(config);
+  log.success("Configuration saved");
+  return config.intervals;
+}
+
+// ============================================================================
+// Auth Command
+// ============================================================================
 
 async function runAuth(args: AuthArgs): Promise<void> {
-  // If code is provided, exchange it for tokens
-  if (args.code) {
-    if (!configExists()) {
-      log.error("No configuration found. Run 'auth' with --client-id and --client-secret first.");
-      process.exit(1);
-    }
+  ensureConfigDir();
+  const creds = await resolveCredentials(args.athleteId, args.apiKey, 730);
 
-    // Extract code from full URL if user pasted the entire redirect URL
-    let code = args.code;
-    if (code.includes("localhost") || code.startsWith("http")) {
-      try {
-        const url = new URL(code);
-        const extractedCode = url.searchParams.get("code");
-        if (extractedCode) {
-          code = extractedCode;
-        } else {
-          log.error("Could not find 'code' parameter in URL");
-          process.exit(1);
-        }
-      } catch {
-        // Not a valid URL, use as-is
-      }
-    }
+  log.start("Validating credentials against intervals.icu...");
+  const athlete = await getAthlete(creds);
 
-    const config = loadConfig();
-    log.start("Exchanging authorization code for tokens...");
-
-    const tokenResponse = await fetch(TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        client_id: config.strava.client_id,
-        client_secret: config.strava.client_secret,
-        code: code,
-        grant_type: "authorization_code",
-      }),
-    });
-
-    if (!tokenResponse.ok) {
-      const error = await tokenResponse.text();
-      log.error(`Token exchange failed: ${error}`);
-      process.exit(1);
-    }
-
-    const data: StravaTokenResponse = await tokenResponse.json();
-
-    const tokens: Tokens = {
-      access_token: data.access_token,
-      refresh_token: data.refresh_token,
-      expires_at: data.expires_at,
-      athlete_id: data.athlete.id,
-    };
-
-    saveTokens(tokens);
-    log.success(`Authenticated as ${data.athlete.firstname} ${data.athlete.lastname}`);
-    log.ready("Now run: npx claude-coach sync");
-    return;
-  }
-
-  // Otherwise, generate and print the authorization URL
-  if (!args.clientId || !args.clientSecret) {
-    log.error("Required: --client-id and --client-secret");
-    log.info("Get these from: https://www.strava.com/settings/api");
-    process.exit(1);
-  }
-
-  // Save config for later use
-  const config = createConfig(args.clientId, args.clientSecret, 730);
-  saveConfig(config);
-
-  const authUrl = new URL(AUTHORIZE_URL);
-  authUrl.searchParams.set("client_id", args.clientId);
-  authUrl.searchParams.set("response_type", "code");
-  authUrl.searchParams.set("redirect_uri", REDIRECT_URI);
-  authUrl.searchParams.set("scope", "activity:read_all");
-  authUrl.searchParams.set("approval_prompt", "auto");
-
-  console.log("\n📋 AUTHORIZATION URL:\n");
-  console.log(authUrl.toString());
-  console.log("\n📝 INSTRUCTIONS:");
-  console.log("1. Open the URL above in a browser");
-  console.log("2. Click 'Authorize' on Strava");
-  console.log("3. You'll be redirected to a page that won't load (that's OK!)");
-  console.log("4. Copy the ENTIRE URL from your browser's address bar");
-  console.log("5. Paste it back to Claude\n");
+  saveConfig(createConfig(creds.athlete_id, creds.api_key, loadConfig().sync_days ?? 730));
+  log.success(`Authenticated as ${athlete.name || athlete.firstname || creds.athlete_id}`);
+  log.ready("Now run: npx claude-coach sync");
 }
 
 // ============================================================================
@@ -318,19 +250,24 @@ function escapeString(str: string | null | undefined): string {
   return `'${str.replace(/'/g, "''")}'`;
 }
 
-function insertActivity(activity: StravaActivity): void {
+function toBit(value: boolean | undefined): number {
+  return value ? 1 : 0;
+}
+
+function insertActivity(activity: IntervalsActivity): void {
   const sql = `
     INSERT OR REPLACE INTO activities (
       id, name, sport_type, start_date, elapsed_time, moving_time,
       distance, total_elevation_gain, average_speed, max_speed,
-      average_heartrate, max_heartrate, average_watts, max_watts,
-      weighted_average_watts, kilojoules, suffer_score, average_cadence,
-      calories, description, workout_type, gear_id, raw_json, synced_at
+      average_heartrate, max_heartrate, average_watts,
+      weighted_average_watts, training_load, average_cadence,
+      calories, description, race, ftp, device_name, source,
+      external_id, raw_json, synced_at
     ) VALUES (
-      ${activity.id},
+      ${escapeString(activity.id)},
       ${escapeString(activity.name)},
-      ${escapeString(activity.sport_type)},
-      ${escapeString(activity.start_date)},
+      ${escapeString(activity.type)},
+      ${escapeString(activity.start_date_local)},
       ${activity.elapsed_time ?? "NULL"},
       ${activity.moving_time ?? "NULL"},
       ${activity.distance ?? "NULL"},
@@ -339,16 +276,17 @@ function insertActivity(activity: StravaActivity): void {
       ${activity.max_speed ?? "NULL"},
       ${activity.average_heartrate ?? "NULL"},
       ${activity.max_heartrate ?? "NULL"},
-      ${activity.average_watts ?? "NULL"},
-      ${activity.max_watts ?? "NULL"},
-      ${activity.weighted_average_watts ?? "NULL"},
-      ${activity.kilojoules ?? "NULL"},
-      ${activity.suffer_score ?? "NULL"},
+      ${activity.icu_average_watts ?? "NULL"},
+      ${activity.icu_weighted_avg_watts ?? "NULL"},
+      ${activity.icu_training_load ?? "NULL"},
       ${activity.average_cadence ?? "NULL"},
       ${activity.calories ?? "NULL"},
       ${escapeString(activity.description)},
-      ${activity.workout_type ?? "NULL"},
-      ${escapeString(activity.gear_id)},
+      ${toBit(activity.race)},
+      ${activity.icu_ftp ?? "NULL"},
+      ${escapeString(activity.device_name)},
+      ${escapeString(activity.source)},
+      ${escapeString(activity.external_id)},
       ${escapeString(JSON.stringify(activity))},
       datetime('now')
     );
@@ -357,21 +295,43 @@ function insertActivity(activity: StravaActivity): void {
   execute(sql);
 }
 
-function insertAthlete(athlete: {
-  id: number;
-  firstname: string;
-  lastname: string;
-  weight?: number;
-  ftp?: number;
-}): void {
+// Cycling sport types as reported by intervals.icu's `type` field - used to find
+// the most recent FTP figure for the athlete profile.
+const CYCLING_TYPES = new Set([
+  "Ride",
+  "VirtualRide",
+  "GravelRide",
+  "MountainBikeRide",
+  "EBikeRide",
+]);
+
+function deriveFtp(activities: IntervalsActivity[]): number | null {
+  const rides = activities
+    .filter((a) => CYCLING_TYPES.has(a.type) && a.icu_ftp != null)
+    .sort((a, b) => b.start_date_local.localeCompare(a.start_date_local));
+  return rides.length > 0 ? (rides[0].icu_ftp as number) : null;
+}
+
+function deriveMaxHeartrate(activities: IntervalsActivity[]): number | null {
+  const values = activities.map((a) => a.max_heartrate).filter((v): v is number => v != null);
+  return values.length > 0 ? Math.max(...values) : null;
+}
+
+function insertAthlete(
+  athlete: IntervalsAthlete,
+  ftp: number | null,
+  maxHeartrate: number | null
+): void {
   const sql = `
-    INSERT OR REPLACE INTO athlete (id, firstname, lastname, weight, ftp, raw_json, updated_at)
+    INSERT OR REPLACE INTO athlete (id, firstname, lastname, weight, ftp, max_heartrate, resting_hr, raw_json, updated_at)
     VALUES (
-      ${athlete.id},
-      ${escapeString(athlete.firstname)},
+      ${escapeString(athlete.id)},
+      ${escapeString(athlete.firstname || athlete.name)},
       ${escapeString(athlete.lastname)},
-      ${athlete.weight ?? "NULL"},
-      ${athlete.ftp ?? "NULL"},
+      ${athlete.icu_weight ?? "NULL"},
+      ${ftp ?? "NULL"},
+      ${maxHeartrate ?? "NULL"},
+      ${athlete.icu_resting_hr ?? "NULL"},
       ${escapeString(JSON.stringify(athlete))},
       datetime('now')
     );
@@ -380,114 +340,28 @@ function insertAthlete(athlete: {
 }
 
 async function runSync(args: SyncArgs): Promise<void> {
-  log.box("Claude Coach - Strava Sync");
+  log.box("Claude Coach - intervals.icu Sync");
 
-  // Step 0: Initialize SQLite backend
+  // ensureConfigDir() must run before initDatabase(): the SQLite backend opens
+  // a file inside ~/.claude-coach/ directly and throws if that directory
+  // doesn't exist yet - the exact state of a brand-new install.
+  ensureConfigDir();
   await initDatabase();
-
-  const syncDays = args.days || 730;
-
-  // Step 1: Handle token-based auth (no browser needed)
-  if (args.accessToken && args.refreshToken) {
-    log.info("Using provided access tokens...");
-
-    // Save tokens - we'll get athlete_id after fetching profile
-    // Set expiry to 1 hour from now (we have refresh token for renewal)
-    const tempTokens = {
-      access_token: args.accessToken,
-      refresh_token: args.refreshToken,
-      expires_at: Math.floor(Date.now() / 1000) + 3600,
-      athlete_id: 0, // Will be updated after fetching athlete
-    };
-    saveTokens(tempTokens);
-
-    // Create minimal config if needed
-    if (!configExists()) {
-      // Token-based auth doesn't need client credentials for initial sync
-      // but we need them for token refresh - use placeholders
-      const config = createConfig("token-auth", "token-auth", syncDays);
-      saveConfig(config);
-    }
-
-    // Initialize database
-    migrate();
-
-    // Fetch athlete to get ID and validate tokens
-    log.start("Validating tokens and fetching athlete profile...");
-    const athlete = await getAthlete(tempTokens);
-
-    // Update tokens with real athlete ID
-    const tokens = { ...tempTokens, athlete_id: athlete.id };
-    saveTokens(tokens);
-
-    insertAthlete(athlete);
-    log.success(`Authenticated as ${athlete.firstname} ${athlete.lastname}`);
-
-    // Fetch activities
-    const afterDate = new Date();
-    afterDate.setDate(afterDate.getDate() - syncDays);
-    const activities = await getAllActivities(tokens, afterDate);
-
-    // Store activities
-    log.start("Storing activities in database...");
-    let count = 0;
-    for (const activity of activities) {
-      insertActivity(activity);
-      count++;
-      if (count % 50 === 0) {
-        log.progress(`   Stored ${count}/${activities.length}...`);
-      }
-    }
-    log.progressEnd();
-    log.success(`Stored ${activities.length} activities`);
-
-    execute(`
-      INSERT INTO sync_log (started_at, completed_at, activities_synced, status)
-      VALUES (datetime('now'), datetime('now'), ${activities.length}, 'success');
-    `);
-
-    log.info(`Database: ${getDbPath()}`);
-    log.ready("Sync complete! You can now create training plans.");
-    return;
-  }
-
-  // Step 2: OAuth-based auth (requires browser)
-  if (!configExists()) {
-    if (args.clientId && args.clientSecret) {
-      log.info("Creating configuration from command line arguments...");
-      const config = createConfig(args.clientId, args.clientSecret, syncDays);
-      saveConfig(config);
-      log.success("Configuration saved");
-    } else {
-      log.info("No configuration found. Let's set things up.");
-      const config = await promptForConfig();
-      saveConfig(config);
-      log.success("Configuration saved");
-    }
-  }
-
-  const config = loadConfig();
-  const configSyncDays = args.days || config.sync_days || 730;
-
-  // Initialize database
   migrate();
 
-  // Authenticate with Strava (opens browser)
-  const tokens = await getValidTokens();
+  const syncDays = args.days || (configExists() ? loadConfig().sync_days : 730) || 730;
+  const creds = await resolveCredentials(args.athleteId, args.apiKey, syncDays);
 
-  // Step 4: Fetch and store athlete profile
-  log.start("Fetching athlete profile...");
-  const athlete = await getAthlete(tokens);
-  insertAthlete(athlete);
-  log.success(`Athlete: ${athlete.firstname} ${athlete.lastname}`);
+  log.start("Validating credentials and fetching athlete profile...");
+  const athlete = await getAthlete(creds);
+  log.success(`Authenticated as ${athlete.name || athlete.firstname || creds.athlete_id}`);
 
-  // Step 5: Fetch activities
   const afterDate = new Date();
-  afterDate.setDate(afterDate.getDate() - configSyncDays);
+  afterDate.setDate(afterDate.getDate() - syncDays);
+  const activities = await getAllActivities(creds, afterDate);
 
-  const activities = await getAllActivities(tokens, afterDate);
+  insertAthlete(athlete, deriveFtp(activities), deriveMaxHeartrate(activities));
 
-  // Step 6: Store activities
   log.start("Storing activities in database...");
   let count = 0;
   for (const activity of activities) {
@@ -500,14 +374,13 @@ async function runSync(args: SyncArgs): Promise<void> {
   log.progressEnd();
   log.success(`Stored ${activities.length} activities`);
 
-  // Step 7: Log sync
   execute(`
     INSERT INTO sync_log (started_at, completed_at, activities_synced, status)
     VALUES (datetime('now'), datetime('now'), ${activities.length}, 'success');
   `);
 
   log.info(`Database: ${getDbPath()}`);
-  log.ready(`Query with: sqlite3 -json "${getDbPath()}" "SELECT * FROM weekly_volume"`);
+  log.ready(`Query with: npx claude-coach query "SELECT * FROM weekly_volume"`);
 }
 
 // ============================================================================
@@ -515,7 +388,6 @@ async function runSync(args: SyncArgs): Promise<void> {
 // ============================================================================
 
 function getTemplatePath(): string {
-  // Look for template in multiple locations
   const locations = [
     join(__dirname, "..", "templates", "plan-viewer.html"),
     join(__dirname, "..", "..", "templates", "plan-viewer.html"),
@@ -537,7 +409,6 @@ function getTemplatePath(): string {
 function runRender(args: RenderArgs): void {
   log.start("Rendering training plan...");
 
-  // Read the plan JSON
   let planJson: string;
   try {
     planJson = readFileSync(args.inputFile, "utf-8");
@@ -546,7 +417,6 @@ function runRender(args: RenderArgs): void {
     process.exit(1);
   }
 
-  // Validate it's valid JSON
   try {
     JSON.parse(planJson);
   } catch (err) {
@@ -554,21 +424,17 @@ function runRender(args: RenderArgs): void {
     process.exit(1);
   }
 
-  // Read the template
   const templatePath = getTemplatePath();
   let template = readFileSync(templatePath, "utf-8");
 
-  // Replace the plan data in the template
   const planDataRegex = /<script type="application\/json" id="plan-data">[\s\S]*?<\/script>/;
   const newPlanData = `<script type="application/json" id="plan-data">\n${planJson}\n</script>`;
   template = template.replace(planDataRegex, newPlanData);
 
-  // Output
   if (args.outputFile) {
     writeFileSync(args.outputFile, template);
     log.success(`Training plan rendered to: ${args.outputFile}`);
   } else {
-    // Output to stdout
     console.log(template);
   }
 }

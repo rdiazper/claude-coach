@@ -7,7 +7,6 @@ import { tmpdir } from "os";
 describe("Config", () => {
   const testDir = join(tmpdir(), "claude-coach-test-" + Date.now());
   const configFile = join(testDir, "config.json");
-  const tokensFile = join(testDir, "tokens.json");
 
   beforeEach(() => {
     mkdirSync(testDir, { recursive: true });
@@ -19,10 +18,12 @@ describe("Config", () => {
 
   describe("config file operations", () => {
     it("should write and read config correctly", () => {
+      // intervals.icu auth is a single non-expiring API key - no separate
+      // tokens.json and no refresh-token dance, unlike the original Strava version.
       const config = {
-        strava: {
-          client_id: "12345",
-          client_secret: "secret123",
+        intervals: {
+          athlete_id: "i123456",
+          api_key: "secret123",
         },
         sync_days: 730,
       };
@@ -32,40 +33,9 @@ describe("Config", () => {
       expect(existsSync(configFile)).toBe(true);
 
       const loaded = JSON.parse(readFileSync(configFile, "utf-8"));
-      expect(loaded.strava.client_id).toBe("12345");
-      expect(loaded.strava.client_secret).toBe("secret123");
+      expect(loaded.intervals.athlete_id).toBe("i123456");
+      expect(loaded.intervals.api_key).toBe("secret123");
       expect(loaded.sync_days).toBe(730);
-    });
-
-    it("should write and read tokens correctly", () => {
-      const tokens = {
-        access_token: "access123",
-        refresh_token: "refresh456",
-        expires_at: 1234567890,
-        athlete_id: 99999,
-      };
-
-      writeFileSync(tokensFile, JSON.stringify(tokens, null, 2));
-
-      expect(existsSync(tokensFile)).toBe(true);
-
-      const loaded = JSON.parse(readFileSync(tokensFile, "utf-8"));
-      expect(loaded.access_token).toBe("access123");
-      expect(loaded.refresh_token).toBe("refresh456");
-      expect(loaded.expires_at).toBe(1234567890);
-      expect(loaded.athlete_id).toBe(99999);
-    });
-  });
-
-  describe("token expiration", () => {
-    it("should detect expired tokens", () => {
-      const now = Math.floor(Date.now() / 1000);
-      const expiredTokens = { expires_at: now - 100 };
-      const validTokens = { expires_at: now + 3600 };
-
-      // Token expired if current time > expires_at - 60 (buffer)
-      expect(now > expiredTokens.expires_at - 60).toBe(true);
-      expect(now > validTokens.expires_at - 60).toBe(false);
     });
   });
 });
